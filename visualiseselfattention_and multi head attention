@@ -1,0 +1,288 @@
+# ============================================================
+# IMPLEMENT AND VISUALIZE
+# SELF-ATTENTION vs MULTI-HEAD ATTENTION
+# USING NLTK CORPUS + WORD EMBEDDINGS
+# ============================================================
+
+# ------------------------------------------------------------
+# IMPORT REQUIRED LIBRARIES
+# ------------------------------------------------------------
+# torch  → core tensor operations
+# nn     → neural network layers
+# F      → functions like softmax
+# matplotlib → visualization
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+
+# nltk → natural language toolkit
+# brown → a standard text corpus used in NLP
+import nltk
+from nltk.corpus import brown
+
+# ------------------------------------------------------------
+# DOWNLOAD CORPUS (ONLY FIRST TIME)
+# ------------------------------------------------------------
+# Ensures Brown corpus is available locally
+nltk.download('brown')
+
+# ------------------------------------------------------------
+# FIX RANDOMNESS FOR REPRODUCIBILITY
+# ------------------------------------------------------------
+# Even though the corpus is fixed, embeddings and neural
+# network weights are initialized randomly.
+# This line ensures the SAME results every time the code runs.
+torch.manual_seed(1)
+
+# ============================================================
+# STEP 1: LOAD TEXT FROM NLTK CORPUS
+# ============================================================
+# Brown corpus contains millions of words.
+# For visualization, we take ONLY a few words.
+words = brown.words()[:6]
+
+# Convert words to lowercase for consistency
+tokens = [word.lower() for word in words]
+
+print("Tokens from NLTK corpus:", tokens)
+
+# ============================================================
+# STEP 2: BUILD VOCABULARY
+# ============================================================
+# Vocabulary maps each unique word → unique integer ID
+# This is required because neural networks work with numbers
+vocab = {word: idx for idx, word in enumerate(set(tokens))}
+
+print("Vocabulary:", vocab)
+
+# Convert token list into index list
+# Shape: (batch_size = 1, sequence_length)
+indices = torch.tensor([[vocab[word] for word in tokens]])
+
+print("Word indices:", indices)
+
+# ============================================================
+# STEP 3: CREATE WORD EMBEDDINGS
+# ============================================================
+# Embeddings convert word indices into dense vectors
+# Each word is represented by an 8-dimensional vector
+embedding_dim = 8
+
+# nn.Embedding creates a lookup table:
+# index → vector
+embedding_layer = nn.Embedding(
+    num_embeddings=len(vocab),
+    embedding_dim=embedding_dim
+)
+
+# Convert indices into embeddings
+# Shape: (batch_size, sequence_length, embedding_dim)
+x = embedding_layer(indices)
+
+print("Embedding tensor shape:", x.shape)
+
+# ============================================================
+# SELF-ATTENTION IMPLEMENTATION
+# ============================================================
+
+class SelfAttention(nn.Module):
+    def __init__(self, embed_dim):
+        """
+        Constructor for Self-Attention layer.
+
+        Purpose:
+        - Define trainable layers (Q, K, V)
+        - No data processing happens here
+        """
+        super(SelfAttention, self).__init__()
+
+        # Linear layers that transform embeddings into:
+        # Query → what a word is looking for
+        # Key   → what a word represents
+        # Value → what information a word provides
+        self.W_Q = nn.Linear(embed_dim, embed_dim)
+        self.W_K = nn.Linear(embed_dim, embed_dim)
+        self.W_V = nn.Linear(embed_dim, embed_dim)
+
+        # Scaling factor to stabilize dot-product attention
+        self.scale = embed_dim ** 0.5
+
+    def forward(self, x):
+        """
+        Forward pass defines HOW attention is computed.
+
+        Input:
+        x → (batch_size, sequence_length, embedding_dim)
+        """
+
+        # STEP 1: GENERATE QUERY, KEY, VALUE
+        Q = self.W_Q(x)
+        K = self.W_K(x)
+        V = self.W_V(x)
+
+        # STEP 2: COMPUTE ATTENTION SCORES
+        # Each word compares itself with every other word
+        # Result: (sequence_length × sequence_length)
+        scores = torch.matmul(Q, K.transpose(-2, -1))
+
+        # STEP 3: SCALE SCORES
+        scores = scores / self.scale
+
+        # STEP 4: APPLY SOFTMAX
+        # Converts scores into probabilities
+        # Each row sums to 1
+        attention_weights = F.softmax(scores, dim=-1)
+
+        # STEP 5: COMPUTE FINAL OUTPUT
+        # Weighted sum of value vectors
+        output = torch.matmul(attention_weights, V)
+
+        return output, attention_weights
+
+
+# ============================================================
+# MULTI-HEAD ATTENTION IMPLEMENTATION
+# ============================================================
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads):
+        """
+        Constructor for Multi-Head Attention.
+
+        embed_dim → total embedding size
+        num_heads → number of parallel attention heads
+        The constructor is where we build the layer.”
+
+           In __init__() we:
+
+           Define trainable parameters
+
+           Create layers
+
+           Set hyperparameters
+
+
+        """
+        super(MultiHeadAttention, self).__init__()
+
+        # Ensure embedding can be split evenly
+        assert embed_dim % num_heads == 0
+
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+
+        # Linear layers for Q, K, V
+        self.W_Q = nn.Linear(embed_dim, embed_dim)
+        self.W_K = nn.Linear(embed_dim, embed_dim)
+        self.W_V = nn.Linear(embed_dim, embed_dim)
+
+        # Final linear layer after concatenation
+        self.fc = nn.Linear(embed_dim, embed_dim)
+
+        self.scale = self.head_dim ** 0.5
+
+    def forward(self, x):
+        """
+        Performs multi-head attention.
+        The forward pass defines how data flows through the model.
+        Input:
+        x → (batch_size, sequence_length, embed_dim)
+        """
+        B, T, D = x.shape
+
+        # STEP 1: CREATE Q, K, V
+        Q = self.W_Q(x)
+        K = self.W_K(x)
+        V = self.W_V(x)
+
+        # STEP 2: SPLIT INTO MULTIPLE HEADS
+        # Each head sees a smaller part of embedding
+        Q = Q.view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        K = K.view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        V = V.view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+
+        # STEP 3: COMPUTE ATTENTION PER HEAD
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / self.scale
+        attention_weights = F.softmax(scores, dim=-1)
+
+        # STEP 4: APPLY ATTENTION
+        out = torch.matmul(attention_weights, V)
+
+        # STEP 5: CONCATENATE HEADS
+        out = out.transpose(1, 2).contiguous().view(B, T, D)
+
+        # STEP 6: FINAL PROJECTION
+        out = self.fc(out)
+
+        return out, attention_weights
+
+
+# ============================================================
+# RUN SELF-ATTENTION
+# ============================================================
+
+self_attn = SelfAttention(embed_dim=embedding_dim)
+sa_output, sa_weights = self_attn(x)
+
+print("\nSELF-ATTENTION")
+print("Output shape:", sa_output.shape)
+print("Attention weight shape:", sa_weights.shape)
+
+# VISUALIZE SELF-ATTENTION
+plt.figure(figsize=(6, 5))
+plt.imshow(sa_weights[0].detach().numpy(), cmap="viridis")
+plt.xticks(range(len(tokens)), tokens, rotation=45)
+plt.yticks(range(len(tokens)), tokens)
+plt.colorbar()
+plt.title("Self-Attention on NLTK Corpus")
+plt.xlabel("Key Word")
+plt.ylabel("Query Word")
+plt.show()
+
+
+# ============================================================
+# RUN MULTI-HEAD ATTENTION
+# ============================================================
+
+mha = MultiHeadAttention(embed_dim=embedding_dim, num_heads=2)
+mha_output, mha_weights = mha(x)
+
+print("\nMULTI-HEAD ATTENTION")
+print("Output shape:", mha_output.shape)
+print("Attention weight shape:", mha_weights.shape)
+
+# ============================================================
+# VISUALIZE EACH HEAD WITH COLOR SCALE (FIX APPLIED ✅)
+# ============================================================
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+
+for h in range(2):
+    im = axes[h].imshow(
+        mha_weights[0, h].detach().numpy(),
+        cmap="viridis"
+    )
+    axes[h].set_xticks(range(len(tokens)))
+    axes[h].set_yticks(range(len(tokens)))
+    axes[h].set_xticklabels(tokens, rotation=45)
+    axes[h].set_yticklabels(tokens)
+    axes[h].set_title(f"Attention Head {h+1}")
+
+    # ADD COLORBAR (SCALING VALUES) FOR EACH HEAD
+    plt.colorbar(im, ax=axes[h], fraction=0.046, pad=0.04)
+
+plt.tight_layout()
+plt.show()
+
+
+# ============================================================
+# FINAL OBSERVATION (FOR STUDENTS)
+# ============================================================
+
+print("\nFINAL OBSERVATION:")
+print("- Attention is applied on real corpus words")
+print("- Self-attention produces ONE attention map")
+print("- Multi-head attention produces MULTIPLE maps")
+print("- Different heads capture different relationships")
+print("- This is the core idea behind Transformers")
